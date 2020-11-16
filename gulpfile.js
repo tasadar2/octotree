@@ -160,6 +160,7 @@ function buildJs(prefix = '.', ctx = {}) {
     `${prefix}/tmp/template.js`,
     `${prefix}/src/util.module.js`,
     `${prefix}/src/util.async.js`,
+    `${prefix}/src/util.misc.js`,
     `${prefix}/src/util.deXss.js`,
     `${prefix}/src/util.plugins.js`,
     `${prefix}/src/core.constants.js`,
@@ -173,7 +174,6 @@ function buildJs(prefix = '.', ctx = {}) {
     `${prefix}/src/view.error.js`,
     `${prefix}/src/view.tree.js`,
     `${prefix}/src/view.options.js`,
-    `${prefix}/src/view.footer.js`,
     `${prefix}/src/main.js`
   ];
 

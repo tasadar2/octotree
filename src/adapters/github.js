@@ -7,20 +7,18 @@ const GH_PJAX_CONTAINER_SEL =
   '#js-repo-pjax-container, div[itemtype="http://schema.org/SoftwareSourceCode"] main, [data-pjax-container]';
 
 const GH_CONTAINERS = '.container, .container-lg, .container-responsive';
-const GH_HEADER = '.js-header-wrapper > header';
 const GH_MAX_HUGE_REPOS_SIZE = 50;
 const GH_HIDDEN_RESPONSIVE_CLASS = '.d-none';
 const GH_RESPONSIVE_BREAKPOINT = 1010;
 
 class GitHub extends PjaxAdapter {
-  constructor(store) {
-    super(store);
+  constructor() {
+    super(GH_PJAX_CONTAINER_SEL);
   }
 
   // @override
   init($sidebar) {
-    const pjaxContainer = $(GH_PJAX_CONTAINER_SEL)[0];
-    super.init($sidebar, {pjaxContainer: pjaxContainer});
+    super.init($sidebar);
 
     // Fix #151 by detecting when page layout is updated.
     // In this case, split-diff page has a wider layout, so need to recompute margin.
@@ -46,13 +44,24 @@ class GitHub extends PjaxAdapter {
   }
 
   // @override
-  canLoadEntireTree(repo) {
+  async shouldLoadEntireTree(repo) {
+    const isLoadingPr = await extStore.get(STORE.PR) && repo.pullNumber;
+    if (isLoadingPr) {
+      return true;
+    }
+
+    const isGlobalLazyLoad = await extStore.get(STORE.LAZYLOAD);
+    if (isGlobalLazyLoad) {
+      return false;
+    }
+
+    // Else, return true only if it isn't in a huge repo list, which we must lazy load
     const key = `${repo.username}/${repo.reponame}`;
-    const hugeRepos = this.store.get(STORE.HUGE_REPOS);
-    if (hugeRepos[key]) {
+    const hugeRepos = await extStore.get(STORE.HUGE_REPOS);
+    if (hugeRepos[key] && isValidTimeStamp(hugeRepos[key])) {
       // Update the last load time of the repo
       hugeRepos[key] = new Date().getTime();
-      this.store.set(STORE.HUGE_REPOS, hugeRepos);
+      await extStore.set(STORE.HUGE_REPOS, hugeRepos);
     }
     return !hugeRepos[key];
   }
@@ -67,31 +76,33 @@ class GitHub extends PjaxAdapter {
 
   // @override
   updateLayout(sidebarPinned, sidebarVisible, sidebarWidth) {
-    const SPACING = 10;
-    const $header = $(GH_HEADER);
+    const SPACING = 20;
     const $containers =
       $('html').width() <= GH_RESPONSIVE_BREAKPOINT
         ? $(GH_CONTAINERS).not(GH_HIDDEN_RESPONSIVE_CLASS)
         : $(GH_CONTAINERS);
 
-    const autoMarginLeft = ($(document).width() - $containers.width()) / 2;
     const shouldPushEverything = sidebarPinned && sidebarVisible;
-    const smallScreen = autoMarginLeft <= sidebarWidth + SPACING;
 
-    $('html').css('margin-left', shouldPushEverything && smallScreen ? sidebarWidth : '');
-    $containers.css('margin-left', shouldPushEverything && smallScreen ? SPACING : '');
+    if (shouldPushEverything) {
+      $('html').css('margin-left', sidebarWidth);
 
-    if (shouldPushEverything && !smallScreen) {
-      // Override important in Github Header class in large screen
-      $header.attr('style', `padding-left: ${sidebarWidth + SPACING}px !important`);
+      const autoMarginLeft = ($(document).width() - $containers.width()) / 2;
+      const marginLeft = Math.max(SPACING, autoMarginLeft - sidebarWidth);
+      $containers.each(function () {
+        const $container = $(this);
+        const paddingLeft = ($container.innerWidth() - $container.width()) / 2;
+        $container.css('margin-left', marginLeft - paddingLeft);
+      })
     } else {
-      $header.removeAttr('style');
+      $('html').css('margin-left', '');
+      $containers.css('margin-left', '');
     }
   }
 
   // @override
-  getRepoFromPath(currentRepo, token, cb) {
-    if (!octotree.shouldShowOctotree()) {
+  async getRepoFromPath(currentRepo, token, cb) {
+    if (!await octotree.shouldShowOctotree()) {
       return cb();
     }
 
@@ -103,6 +114,8 @@ class GitHub extends PjaxAdapter {
     const type = match[3];
     const typeId = match[4];
 
+    const isPR = type === 'pull';
+
     // Not a repository, skip
     if (~GH_RESERVED_USER_NAMES.indexOf(username) || ~GH_RESERVED_REPO_NAMES.indexOf(reponame)) {
       return cb();
@@ -112,7 +125,7 @@ class GitHub extends PjaxAdapter {
     // TODO would be great if there's a more robust way to do this
     /**
      * Github renders the branch name in one of below structure depending on the length
-     * of branch name
+     * of branch name. We're using this for default code page or tree/blob.
      *
      * Option 1: when the length is short enough
      * <summary title="Switch branches or tags">
@@ -133,27 +146,30 @@ class GitHub extends PjaxAdapter {
         : branchNameInTitle;
 
     const branch =
-      // Pick the commit ID as branch name when the code page is listing tree in a particular commit
+      // Use the commit ID when showing a particular commit
       (type === 'commit' && typeId) ||
-      // Pick 'master' as branch name when viewing repo's releases or tags
+      // Use 'master' when viewing repo's releases or tags
       ((type === 'releases' || type === 'tags') && 'master') ||
-      // Pick the commit ID or branch name from the DOM
+      // Get commit ID or branch name from the DOM
       branchFromSummary ||
       ($('.overall-summary .numbers-summary .commits a').attr('href') || '').replace(
         `/${username}/${reponame}/commits/`,
         ''
       ) ||
-      // Pull requests page
-      ($('.commit-ref.base-ref').attr('title') || ':').match(/:(.*)/)[1] ||
+      // The above should work for tree|blob, but if DOM changes, fallback to use ID from URL
+      ((type === 'tree' || type === 'blob') && typeId) ||
+      // Use target branch in a PR page
+      (isPR ? ($('.commit-ref').not('.head-ref').attr('title') || ':').match(/:(.*)/)[1] : null) ||
       // Reuse last selected branch if exist
       (currentRepo.username === username && currentRepo.reponame === reponame && currentRepo.branch) ||
       // Get default branch from cache
       this._defaultBranch[username + '/' + reponame];
 
-    const isPR = type === 'pull';
-    const showOnlyChangedInPR = this.store.get(STORE.PR);
+    const showOnlyChangedInPR = await extStore.get(STORE.PR);
     const pullNumber = isPR && showOnlyChangedInPR ? typeId : null;
-    const repo = {username, reponame, branch, pullNumber};
+    const pullHead = isPR ? ($('.commit-ref.head-ref').attr('title') || ':').match(/:(.*)/)[1] : null;
+    const displayBranch = isPR && pullHead ? `${branch} < ${pullHead}` : null;
+    const repo = {username, reponame, branch, displayBranch, pullNumber};
     if (repo.branch) {
       cb(null, repo);
     } else {
@@ -164,11 +180,6 @@ class GitHub extends PjaxAdapter {
         cb(null, repo);
       });
     }
-  }
-
-  // @override
-  selectFile(path) {
-    super.selectFile(path, {pjaxContainerSel: GH_PJAX_CONTAINER_SEL});
   }
 
   // @override
@@ -315,21 +326,29 @@ class GitHub extends PjaxAdapter {
 
     $.ajax(cfg)
       .done((data, textStatus, jqXHR) => {
-        if (path && path.indexOf('/git/trees') === 0 && data.truncated) {
-          const hugeRepos = this.store.get(STORE.HUGE_REPOS);
-          const repo = `${opts.repo.username}/${opts.repo.reponame}`;
-          const repos = Object.keys(hugeRepos);
-          if (!hugeRepos[repo]) {
-            // If there are too many repos memoized, delete the oldest one
-            if (repos.length >= GH_MAX_HUGE_REPOS_SIZE) {
-              const oldestRepo = repos.reduce((min, p) => (hugeRepos[p] < hugeRepos[min] ? p : min));
-              delete hugeRepos[oldestRepo];
+        (async () => {
+          if (path && path.indexOf('/git/trees') === 0 && data.truncated) {
+            try {
+              const hugeRepos = await extStore.get(STORE.HUGE_REPOS);
+              const repo = `${opts.repo.username}/${opts.repo.reponame}`;
+              const repos = Object.keys(hugeRepos).filter((hugeRepoKey) => isValidTimeStamp(hugeRepos[hugeRepoKey]));
+              if (!hugeRepos[repo]) {
+                // If there are too many repos memoized, delete the oldest one
+                if (repos.length >= GH_MAX_HUGE_REPOS_SIZE) {
+                  const oldestRepo = repos.reduce((min, p) => (hugeRepos[p] < hugeRepos[min] ? p : min));
+                  delete hugeRepos[oldestRepo];
+                }
+                hugeRepos[repo] = new Date().getTime();
+                await extStore.set(STORE.HUGE_REPOS, hugeRepos);
+              }
+            } catch (ignored) {
+            } finally {
+              await this._handleError(cfg, {status: 206}, cb);
             }
-            hugeRepos[repo] = new Date().getTime();
-            this.store.set(STORE.HUGE_REPOS, hugeRepos);
+          } else {
+            cb(null, data, jqXHR);
           }
-          this._handleError(cfg, {status: 206}, cb);
-        } else cb(null, data, jqXHR);
+        })();
       })
       .fail((jqXHR) => this._handleError(cfg, jqXHR, cb));
   }

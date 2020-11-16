@@ -1,6 +1,5 @@
 class TreeView {
-  constructor($dom, store, adapter) {
-    this.store = store;
+  constructor($dom, adapter) {
     this.adapter = adapter;
     this.$view = $dom.find('.octotree-tree-view');
     this.$tree = this.$view
@@ -30,31 +29,32 @@ class TreeView {
     const $jstree = this.$jstree;
 
     $jstree.settings.core.data = (node, cb) => {
-      const prMode = this.store.get(STORE.PR) && repo.pullNumber;
-      const loadAll = this.adapter.canLoadEntireTree(repo) && (prMode || this.store.get(STORE.LOADALL));
+      // This function does not accept an async function as its value
+      // Thus, we use an async anonymous function inside to fix it
+      (async () => {
+        const startTime = Date.now();
+        const loadAll = await this.adapter.shouldLoadEntireTree(repo);
+        node = !loadAll && (node.id === '#' ? {path: ''} : node.original);
 
-      node = !loadAll && (node.id === '#' ? {path: ''} : node.original);
+        this.adapter.loadCodeTree({repo, token, node}, (err, treeData) => {
+          if (err) {
+            if (err.status === 206 && loadAll) {
+              // The repo is too big to load all, need to retry
+              $jstree.refresh(true);
+            } else {
+              $(this).trigger(EVENT.FETCH_ERROR, [err]);
+            }
+            return;
+          }
 
-      this.adapter.loadCodeTree({repo, token, node}, (err, treeData) => {
-        if (err) {
-          if (err.status === 206 && loadAll) {
-            // The repo is too big to load all, need to retry
-            $jstree.refresh(true);
-          } else {
-            $(this).trigger(EVENT.FETCH_ERROR, [err]);
-          }
-        } else {
-          treeData = this._sort(treeData);
-          if (loadAll) {
-            treeData = this._collapse(treeData);
-          }
           cb(treeData);
-        }
-      });
+          $(document).trigger(EVENT.REPO_LOADED, {repo, loadAll, duration: Date.now() - startTime});
+        });
+      })()
     };
 
-    this.$tree.one('refresh.jstree', () => {
-      this.syncSelection(repo);
+    this.$tree.one('refresh.jstree', async () => {
+      await this.syncSelection(repo);
       $(this).trigger(EVENT.VIEW_READY);
     });
 
@@ -76,7 +76,7 @@ class TreeView {
           </div>
           <div class="octotree-header-branch">
             <i class="octotree-icon-branch"></i>
-            ${deXss(repo.branch.toString())}
+            ${deXss((repo.displayBranch || repo.branch).toString())}
           </div>
         </div>`
       )
@@ -87,51 +87,6 @@ class TreeView {
         const newTab = event.shiftKey || event.ctrlKey || event.metaKey;
         newTab ? adapter.openInNewTab(href) : adapter.selectFile(href);
       });
-  }
-
-  _sort(folder) {
-    folder.sort((a, b) => {
-      if (a.type === b.type) return a.text === b.text ? 0 : a.text < b.text ? -1 : 1;
-      return a.type === 'blob' ? 1 : -1;
-    });
-
-    folder.forEach((item) => {
-      if (item.type === 'tree' && item.children !== true && item.children.length > 0) {
-        this._sort(item.children);
-      }
-    });
-
-    return folder;
-  }
-
-  _collapse(folder) {
-    return folder.map((item) => {
-      if (item.type === 'tree') {
-        item.children = this._collapse(item.children);
-        if (item.children.length === 1 && item.children[0].type === 'tree' && item.a_attr) {
-          const onlyChild = item.children[0];
-          const path = item.a_attr['data-download-filename'];
-
-          /**
-           * Using a_attr rather than item.text to concat in order to
-           * avoid the duplication of <div class="octotree-patch">
-           *
-           * For example:
-           *
-           * - item.text + onlyChild.text
-           * 'src/adapters/<span class="octotree-patch">+1</span>' + 'github.js<span class="octotree-patch">+1</span>'
-           *
-           * - path + onlyChild.text
-           * 'src/adapters/' + 'github.js<span class="octotree-patch">+1</span>'
-           *
-           */
-          onlyChild.text = path + '/' + onlyChild.text;
-
-          return onlyChild;
-        }
-      }
-      return item;
-    });
   }
 
   /**
@@ -194,7 +149,7 @@ class TreeView {
     }
   }
 
-  syncSelection(repo) {
+  async syncSelection(repo) {
     const $jstree = this.$jstree;
     if (!$jstree) return;
 
@@ -204,7 +159,7 @@ class TreeView {
     if (!match) return;
 
     const currentPath = match[1];
-    const loadAll = this.adapter.canLoadEntireTree(repo) && this.store.get(STORE.LOADALL);
+    const loadAll = await this.adapter.shouldLoadEntireTree(repo);
 
     selectPath(loadAll ? [currentPath] : breakPath(currentPath));
 

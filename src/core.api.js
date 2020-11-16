@@ -1,68 +1,94 @@
 const GH_RESERVED_USER_NAMES = [
-  'settings',
-  'orgs',
-  'organizations',
-  'site',
-  'blog',
   'about',
-  'explore',
-  'styleguide',
-  'showcases',
-  'trending',
-  'stars',
-  'dashboard',
-  'notifications',
-  'search',
-  'developer',
   'account',
-  'pulls',
-  'issues',
-  'features',
+  'blog',
+  'business',
   'contact',
-  'security',
+  'dashboard',
+  'developer',
+  'explore',
+  'features',
+  'gist',
+  'integrations',
+  'issues',
   'join',
   'login',
-  'watching',
-  'new',
-  'integrations',
-  'gist',
-  'business',
+  'marketplace',
   'mirrors',
+  'new',
+  'notifications',
   'open-source',
+  'organizations',
+  'orgs',
   'personal',
   'pricing',
+  'pulls',
+  'search',
+  'security',
   'sessions',
+  'settings',
+  'showcases',
+  'site',
+  'sponsors',
+  'stars',
+  'styleguide',
   'topics',
+  'trending',
   'users',
-  'marketplace'
+  'watching',
 ];
 const GH_RESERVED_REPO_NAMES = ['followers', 'following', 'repositories'];
 const GH_404_SEL = '#parallax_wrapper';
 const GH_RAW_CONTENT = 'body > pre';
 
 class OctotreeService {
-  getAccessToken() {
-    return window.store.get(window.STORE.TOKEN);
+  constructor() {
+    this.reset();
   }
 
-  getInvalidTokenMessage({responseStatus, requestHeaders}) {
-    return (
-      'The GitHub access token is invalid. ' +
-      'Please go to <a class="settings-btn" href="javascript:void(0)">Settings</a> and update the token.'
-    );
-  }
-
-  load(loadFn) {
-    loadFn();
-  }
-
+  // Hooks
   activate(inputs, opts) {}
 
   applyOptions(opts) {
     return false;
   }
 
-  shouldShowOctotree() {
+  // Public
+  load(loadFn) {
+    loadFn();
+  }
+
+  reset() {
+    this.getAccessToken = this._getAccessToken;
+    this.shouldShowOctotree = this._shouldShowOctotree;
+    this.getInvalidTokenMessage = this._getInvalidTokenMessage;
+    this.setNodeIconAndText = this._setNodeIconAndText;
+  }
+
+  // Private
+  _getAccessToken() {
+    return window.extStore.get(window.STORE.TOKEN);
+  }
+
+  _getInvalidTokenMessage({responseStatus, requestHeaders}) {
+    return (
+      'The GitHub access token is invalid. ' +
+      'Please go to <a class="settings-btn">Settings</a> and update the token.'
+    );
+  }
+
+  async _setNodeIconAndText(context, item) {
+    if (item.type === 'blob') {
+      if (await extStore.get(STORE.ICONS)) {
+        const className = FileIcons.getClassWithColor(item.text);
+        item.icon += ' ' + (className || 'file-generic');
+      } else {
+        item.icon += ' file-generic';
+      }
+    }
+  }
+
+  async _shouldShowOctotree() {
     if ($(GH_404_SEL).length) {
       return false;
     }

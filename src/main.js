@@ -6,22 +6,22 @@ $(document).ready(() => {
     const $document = $(document);
     const $dom = $(TEMPLATE);
     const $sidebar = $dom.find('.octotree-sidebar');
-    const $toggler = $sidebar.find('.octotree-toggle');
+    const $toggler = $sidebar.find('.octotree-toggle').hide();
     const $views = $sidebar.find('.octotree-view');
     const $spinner = $sidebar.find('.octotree-spin');
     const $pinner = $sidebar.find('.octotree-pin');
-    const adapter = new GitHub(store);
-    const treeView = new TreeView($dom, store, adapter);
-    const optsView = new OptionsView($dom, store, adapter);
-    const helpPopup = new HelpPopup($dom, store);
-    const errorView = new ErrorView($dom, store);
+    const adapter = new GitHub();
+    const treeView = new TreeView($dom, adapter);
+    const optsView = new OptionsView($dom, adapter);
+    const helpPopup = new HelpPopup($dom);
+    const errorView = new ErrorView($dom);
 
     let currRepo = false;
     let hasError = false;
 
     $pinner.click(togglePin);
-    setupSidebarFloatingBehaviors();
-    setHotkeys(store.get(STORE.HOTKEYS));
+    await setupSidebarFloatingBehaviors();
+    setHotkeys(await extStore.get(STORE.HOTKEYS));
 
     if (!$html.hasClass(ADDON_CLASS)) $html.addClass(ADDON_CLASS);
 
@@ -31,11 +31,13 @@ $(document).ready(() => {
 
     for (const view of [treeView, errorView, optsView]) {
       $(view)
-        .on(EVENT.VIEW_READY, function(event) {
+        .on(EVENT.VIEW_READY, async function(event) {
           if (this !== optsView) {
             $document.trigger(EVENT.REQ_END);
 
-            if (adapter.isOnPRPage) {
+            optsView.$toggler.removeClass('selected');
+
+            if (adapter.isOnPRPage && await extStore.get(STORE.PR)) {
               treeView.$tree.jstree('open_all');
             }
           }
@@ -48,9 +50,11 @@ $(document).ready(() => {
             showView(hasError ? errorView : treeView);
           }
         })
-        .on(EVENT.OPTS_CHANGE, optionsChanged)
         .on(EVENT.FETCH_ERROR, (event, err) => showError(err));
     }
+
+    $(extStore)
+      .on(EVENT.STORE_CHANGE, optionsChanged);
 
     $document
       .on(EVENT.REQ_START, () => $spinner.addClass('octotree-spin--loading'))
@@ -61,12 +65,14 @@ $(document).ready(() => {
 
     $sidebar
       .addClass(adapter.getCssClass())
-      .width(Math.min(parseInt(store.get(STORE.WIDTH)), 1000))
+      .width(Math.min(parseInt(await extStore.get(STORE.WIDTH)), 1000))
       .resize(() => layoutChanged(true))
       .appendTo($('body'));
 
+    $document.trigger(EVENT.SIDEBAR_HTML_INSERTED);
+
     adapter.init($sidebar);
-    helpPopup.init();
+    await helpPopup.init();
 
     await octotree.activate(
       {
@@ -98,16 +104,21 @@ $(document).ready(() => {
 
         switch (storeKey) {
           case STORE.TOKEN:
-          case STORE.LOADALL:
+          case STORE.LAZYLOAD:
           case STORE.ICONS:
-          case STORE.PR:
             reload = true;
+            break;
+          case STORE.PR:
+            reload = adapter.isOnPRPage;
             break;
           case STORE.HOVEROPEN:
             handleHoverOpenOption(newValue);
             break;
           case STORE.HOTKEYS:
             setHotkeys(newValue, oldValue);
+            break;
+          case STORE.PINNED:
+            onPinToggled(newValue);
             break;
         }
       });
@@ -117,21 +128,25 @@ $(document).ready(() => {
       }
 
       if (reload) {
-        tryLoadRepo(true);
+        await tryLoadRepo(true);
       }
     }
 
-    function tryLoadRepo(reload) {
-      const token = octotree.getAccessToken();
-      adapter.getRepoFromPath(currRepo, token, (err, repo) => {
+    async function tryLoadRepo(reload) {
+      const token = await octotree.getAccessToken();
+      await adapter.getRepoFromPath(currRepo, token, async (err, repo) => {
         if (err) {
-          showError(err);
+          // Error making API, likely private repo but no token
+          await showError(err);
+          if (!isSidebarVisible()) {
+            $toggler.show();
+          }
         } else if (repo) {
-          if (store.get(STORE.PINNED) && !isSidebarVisible()) {
+          if (await extStore.get(STORE.PINNED) && !isSidebarVisible()) {
             // If we're in pin mode but sidebar doesn't show yet, show it.
             // Note if we're from another page back to code page, sidebar is "pinned", but not visible.
-            if (isSidebarPinned()) toggleSidebar();
-            else togglePin();
+            if (isSidebarPinned()) await toggleSidebar();
+            else await onPinToggled(true);
           } else if (isSidebarVisible()) {
             const replacer = ['username', 'reponame', 'branch', 'pullNumber'];
             const repoChanged = JSON.stringify(repo, replacer) !== JSON.stringify(currRepo, replacer);
@@ -141,7 +156,7 @@ $(document).ready(() => {
               currRepo = repo;
               treeView.show(repo, token);
             } else {
-              treeView.syncSelection(repo);
+              await treeView.syncSelection(repo);
             }
           } else {
             // Sidebar not visible (because it's not pinned), show the toggler
@@ -152,7 +167,7 @@ $(document).ready(() => {
           $toggler.hide();
           toggleSidebar(false);
         }
-        layoutChanged();
+        await layoutChanged();
       });
     }
 
@@ -162,17 +177,17 @@ $(document).ready(() => {
       $(view).trigger(EVENT.VIEW_SHOW);
     }
 
-    function showError(err) {
+    async function showError(err) {
       hasError = true;
       errorView.show(err);
 
-      if (store.get(STORE.PINNED)) togglePin(true);
+      if (await extStore.get(STORE.PINNED)) await togglePin(true);
     }
 
-    function toggleSidebar(visibility) {
+    async function toggleSidebar(visibility) {
       if (visibility !== undefined) {
         if (isSidebarVisible() === visibility) return;
-        toggleSidebar();
+        await toggleSidebar();
       } else {
         $html.toggleClass(SHOW_CLASS);
         $document.trigger(EVENT.TOGGLE, isSidebarVisible());
@@ -181,17 +196,27 @@ $(document).ready(() => {
         // Note that tryLoadRepo() already takes care of not reloading if nothing changes.
         if (isSidebarVisible()) {
           $toggler.show();
-          tryLoadRepo();
+          await tryLoadRepo();
         }
       }
 
       return visibility;
     }
 
-    function togglePin(isPinned) {
+    async function togglePin(isPinned) {
       if (isPinned !== undefined) {
         if (isSidebarPinned() === isPinned) return;
         return togglePin();
+      }
+
+      const sidebarPinned = !isSidebarPinned();
+      await extStore.set(STORE.PINNED, sidebarPinned);
+      return sidebarPinned;
+    }
+
+    async function onPinToggled(isPinned) {
+      if (isPinned === isSidebarPinned()) {
+        return;
       }
 
       $pinner.toggleClass(PINNED_CLASS);
@@ -199,28 +224,26 @@ $(document).ready(() => {
       const sidebarPinned = isSidebarPinned();
       $pinner.find('.tooltipped').attr('aria-label', `${sidebarPinned ? 'Unpin' : 'Pin'} this sidebar`);
       $document.trigger(EVENT.TOGGLE_PIN, sidebarPinned);
-      store.set(STORE.PINNED, sidebarPinned);
-      toggleSidebar(sidebarPinned);
-      return sidebarPinned;
+      await toggleSidebar(sidebarPinned);
     }
 
-    function layoutChanged(save = false) {
+    async function layoutChanged(save = false) {
       const width = $sidebar.outerWidth();
       adapter.updateLayout(isSidebarPinned(), isSidebarVisible(), width);
       if (save === true) {
-        store.set(STORE.WIDTH, width);
+        await extStore.set(STORE.WIDTH, width);
       }
     }
 
     /**
      * Controls how the sidebar behaves in float mode (i.e. non-pinned).
      */
-    function setupSidebarFloatingBehaviors() {
-      const MOUSE_LEAVE_DELAY = 500;
+    async function setupSidebarFloatingBehaviors() {
+      const MOUSE_LEAVE_DELAY = 400;
       const KEY_PRESS_DELAY = 4000;
       let isMouseInSidebar = false;
 
-      handleHoverOpenOption(this.store.get(STORE.HOVEROPEN));
+      handleHoverOpenOption(await extStore.get(STORE.HOVEROPEN));
 
       // Immediately closes if click outside the sidebar.
       $document.on('click', () => {
@@ -258,21 +281,17 @@ $(document).ready(() => {
           // Prevent mouseover from propagating to document
           event.stopPropagation();
         })
-        .on('focusin mousemove', (event) => {
+        .on('mousemove', (event) => {
           // Don't do anything while hovering on Toggler
           const isHoveringToggler = $toggler.is(event.target) || $toggler.has(event.target).length;
-
           if (isHoveringToggler) return;
 
-          /**
-           * Use 'focusin' instead of 'mouseenter' to handle the case when clicking a file in the
-           * sidebar then move outside -> 'mouseenter' is triggered in sidebar, clear the timer
-           * and keep sidebar open.
-           */
           isMouseInSidebar = true;
           clearTimer();
 
-          if (event.type === 'mousemove' && !isSidebarVisible()) toggleSidebar(true);
+          if (!isSidebarVisible()) {
+            toggleSidebar(true);
+          }
         });
     }
 
@@ -303,8 +322,8 @@ $(document).ready(() => {
     function setHotkeys(newKeys, oldKeys) {
       key.filter = () => $sidebar.is(':visible');
       if (oldKeys) key.unbind(oldKeys);
-      key(newKeys, () => {
-        if (togglePin()) treeView.focus();
+      key(newKeys, async () => {
+        if (await togglePin()) treeView.focus();
       });
     }
 

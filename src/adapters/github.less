@@ -8,6 +8,9 @@
   overflow: visible;
   padding-bottom: @footer-height;
   padding-top: @header-height;
+  @media all and (min-width: @lg-width) {
+    padding-top: @lg-header-height;
+  }
   position: fixed;
   transform: translate3d(-100%, 0, 0);
   transition: transform 0.3s ease-in;
@@ -95,11 +98,18 @@
         line-height: 1;
         width: 100%;
         height: @header-height;
+        @media all and (min-width: @lg-width) {
+          height: @lg-header-height;
+        }
         margin: 0;
         padding-right: 65px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+
+        &.octotree-header-text-top {
+          padding-bottom: 17px;
+        }
       }
 
       .octotree-help {
@@ -111,6 +121,10 @@
 
     .octotree-tree-view {
       overflow: auto;
+      -webkit-user-select: none;  /* Chrome all / Safari all */
+      -moz-user-select: none;     /* Firefox all */
+      -ms-user-select: none;      /* IE 10+ */
+      user-select: none;          /* Likely future */
 
       .octotree-view-header {
         padding-left: 5px;
@@ -291,6 +305,11 @@
       .octotree-view-header {
         padding-left: 8px;
       }
+      .octotree-view-body {
+        input[type="checkbox"], input[type="radio"] {
+          vertical-align: middle;
+        }
+      }
     }
 
     .octotree-error-view {
@@ -319,7 +338,7 @@
         }
 
         & > div {
-          margin-bottom: 12px;
+          margin-bottom: 10px;
         }
 
         label {
@@ -360,10 +379,22 @@
   //
   // Common buttons
   //
+  .octotree-main-icons {
+    position: absolute;
+    display: flex;
+    flex-flow: row-reverse;
+    align-items: center;
+    top: 16px;
+    right: 6px;
+
+    a {
+      margin-left: 4px;
+    }
+  }
+
   a.octotree-settings,
   a.octotree-pin,
   a.octotree-spin {
-    position: absolute !important;
     text-align: center;
     line-height: 1;
     cursor: pointer;
@@ -472,10 +503,9 @@
   }
 
   a.octotree-pin {
-    top: (@header-height - @icon-size) / 2;
-    right: 6px;
     width: @icon-size;
     height: @icon-size;
+    margin-left: 1.3px !important;
 
     .octotree-icon-pin {
       .icon-v2(@octicons-pin, @font-size: @icon-size, @color: @gray, @hover-color: white);
@@ -488,8 +518,6 @@
   }
 
   a.octotree-settings {
-    top: (@header-height - @icon-size) / 2;
-    right: 26px;
     width: @icon-size;
     height: @icon-size;
 
@@ -531,6 +559,7 @@
     }
 
     .octotree-spin {
+      position: absolute;
       right: 8px;
       top: @header-height + 5;
       display: none;

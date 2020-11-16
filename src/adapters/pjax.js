@@ -1,21 +1,20 @@
 class PjaxAdapter extends Adapter {
-  constructor(store) {
-    super(['jquery.pjax.js'], store);
+  constructor(pjaxContainerSel) {
+    super(['jquery.pjax.js']);
+    this._pjaxContainerSel = pjaxContainerSel;
 
     $(document)
-      .on('pjax:start', () => $(document).trigger(EVENT.REQ_START))
-      .on('pjax:end', () => $(document).trigger(EVENT.REQ_END))
+      .on('pjax:start', (e) => this._handlePjaxEvent(e, EVENT.REQ_START, 'pjax:start'))
+      .on('pjax:end', (e) => this._handlePjaxEvent(e, EVENT.REQ_END, 'pjax:end'))
       .on('pjax:timeout', (e) => e.preventDefault());
   }
 
   // @override
-  // @param {Object} opts - {pjaxContainer: the specified pjax container}
   // @api public
-  init($sidebar, opts) {
+  init($sidebar) {
     super.init($sidebar);
 
-    opts = opts || {};
-    const pjaxContainer = opts.pjaxContainer;
+    const pjaxContainer = $(this._pjaxContainerSel)[0];
 
     if (!window.MutationObserver) return;
 
@@ -60,11 +59,8 @@ class PjaxAdapter extends Adapter {
   }
 
   // @override
-  // @param {Object} opts - {$pjax_container: jQuery object}
   // @api public
-  selectFile(path, opts) {
-    opts = opts || {};
-
+  selectFile(path) {
     // Do nothing if file is already selected.
     if (location.pathname === path) return;
 
@@ -72,15 +68,14 @@ class PjaxAdapter extends Adapter {
     // Don't bother fetching the page with pjax
     const pathWithoutAnchor = path.replace(/#.*$/, '');
     const isSamePage = location.pathname === pathWithoutAnchor;
-    const pjaxContainerSel = opts.pjaxContainerSel;
-    const loadWithPjax = $(pjaxContainerSel).length && !isSamePage;
+    const loadWithPjax = $(this._pjaxContainerSel).length && !isSamePage;
 
     if (loadWithPjax) {
       this._patchPjax();
       $.pjax({
         // Needs full path for pjax to work with Firefox as per cross-domain-content setting
         url: location.protocol + '//' + location.host + path,
-        container: pjaxContainerSel,
+        container: this._pjaxContainerSel,
         timeout: 0 // global timeout doesn't seem to work, use this instead
       });
     } else {
@@ -88,6 +83,59 @@ class PjaxAdapter extends Adapter {
     }
   }
 
+  /**
+   * Event handler of pjax events.
+   * @api private
+   */
+  _handlePjaxEvent(event, octotreeEventName, pjaxEventName) {
+    // Avoid re-entrance, which would blow the callstack. Because dispatchEvent() is synchronous, it's possible
+    // for badly implemented handler from another extension to prevent legit event handling if users navigate
+    // among files too quickly. Hopefully none is that bad. We'll deal with it IFF it happens.
+    if (this._isDispatching) {
+      return;
+    }
+    this._isDispatching = true;
+
+    try {
+      $(document).trigger(octotreeEventName);
+
+      // Only dispatch to native DOM if the event is started by Octotree. If the event is started in the DOM, jQuery
+      // wraps it in the originalEvent property, that's what we use to check. Fixes #864.
+      if (event.originalEvent == null) {
+        this._dispatchPjaxEventInDom(pjaxEventName);
+      }
+    } finally {
+      this._isDispatching = false;
+    }
+  }
+
+  /**
+   * Dispatches a pjax event directly in the DOM.
+   *
+   * GitHub's own pjax implementation dispatches its events directly in the DOM, while
+   * the jQuery pjax library we use dispatches its events (during selectFile()) only
+   * within its jQuery instance. Because some GitHub add-ons listen to certain pjax events
+   * in the DOM it may be necessary to forward an event from jQuery to the DOM to make sure
+   * those add-ons don't break.
+   *
+   * Note that we don't forward the details/extra parameters or whether they're cancellable,
+   * because the pjax implementations differ in this case!
+   *
+   * @see https://github.com/ovity/octotree/issues/490
+   *
+   * @param {string} type The name of the event
+   * @api private
+   */
+  _dispatchPjaxEventInDom(type) {
+    const pjaxContainer = $(this._pjaxContainerSel)[0];
+    if (pjaxContainer) {
+      pjaxContainer.dispatchEvent(new Event(type, {
+        bubbles: true
+      }));
+    }
+  }
+
+  // @api protected
   _patchPjax() {
     // The pjax plugin ($.pjax) is loaded in same time with Octotree (document ready event) and
     // we don't know when $.pjax fully loaded, so we will do patching once in runtime
